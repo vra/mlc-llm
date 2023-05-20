@@ -1,4 +1,3 @@
-# pylint: disable=missing-docstring
 import argparse
 import json
 import os
@@ -11,7 +10,7 @@ from tvm import relax
 
 import mlc_llm
 from mlc_llm import utils
-from mlc_llm.relax_model import gpt_neox, llama, moss
+from mlc_llm.relax_model import gpt_neox, llama, moss, rwkv
 
 
 def _parse_args():
@@ -184,7 +183,7 @@ def debug_dump_script(mod, name, args):
     if not args.debug_dump:
         return
     dump_path = os.path.join(args.artifact_path, "debug", name)
-    with open(dump_path, "w", encoding="utf-8") as outfile:
+    with open(dump_path, "w") as outfile:
         outfile.write(mod.script(show_meta=True))
     print(f"Dump mod to {dump_path}")
 
@@ -224,25 +223,35 @@ def mod_transform_before_build(
     args: argparse.Namespace,
 ) -> tvm.IRModule:
     """First-stage: Legalize ops and trace"""
-    model_names = [
-        "prefill",
-        "decode",
-        "create_kv_cache",
-        "softmax_with_temperature",
-        "get_metadata",
-    ]
+    if ARGS.model.startswith("rwkv-"):
+        model_names = [
+            "decoding",
+            "create_kv_cache",
+            "softmax_with_temperature",
+            "get_metadata",
+            "reset_kv_cache",
+        ]
+    else:
+        model_names = [
+            "prefill",
+            "decoding",
+            "create_kv_cache",
+            "softmax_with_temperature",
+            "get_metadata",
+        ]
 
     if args.quantization.mode != "no":
-        mod = mlc_llm.transform.GroupQuantize(  # pylint: disable=not-callable
+        mod = mlc_llm.transform.GroupQuantize(
             group_size=40 if args.quantization.mode.endswith("3") else 32,
             sym=args.quantization.sym,
             mode=args.quantization.mode,
             storage_nbit=args.quantization.storage_nbit,
             dtype=args.quantization.model_dtype,
         )(mod)
-    mod = mlc_llm.transform.FuseTransposeMatmul()(mod)  # pylint: disable=not-callable
-    mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-parameter
-    mod = mlc_llm.transform.FuseDecodeMatmulEwise(  # pylint: disable=not-callable
+    mod = mlc_llm.transform.FuseTransposeMatmul()(mod)
+
+    mod = relax.pipeline.get_pipeline()(mod)
+    mod = mlc_llm.transform.FuseDecodeMatmulEwise(
         args.quantization.model_dtype, args.target_kind
     )(mod)
     mod = relax.transform.DeadCodeElimination(model_names)(mod)
@@ -250,6 +259,7 @@ def mod_transform_before_build(
     mod_transform, mod_deploy = utils.split_transform_deploy_mod(mod, model_names)
 
     debug_dump_script(mod_transform, "mod_lift_params.py", args)
+    debug_dump_script(mod_deploy, "mod_deploy.py", args)
 
     new_params = utils.transform_params(mod_transform, model_params)
     utils.save_params(new_params, args.artifact_path)
@@ -362,6 +372,8 @@ def main():
                 mod, params = gpt_neox.get_model(ARGS, config)
             elif ARGS.model_category == "moss":
                 mod, params = moss.get_model(ARGS, config)
+            elif ARGS.model_category == "rwkv":
+                mod, params = rwkv.get_model(ARGS, config)
             else:
                 raise ValueError(f"Model {ARGS.model} not supported")
             mod = mod_transform_before_build(mod, params, ARGS)

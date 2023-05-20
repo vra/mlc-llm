@@ -41,9 +41,12 @@ quantization_dict = {
     "q0f16": Quantization(
         name="q0f16", mode="no", sym=False, storage_nbit=-1, model_dtype="float16"
     ),
+    "q8f16": Quantization(
+        name="q8f16", mode="uint8", sym=False, storage_nbit=-1, model_dtype="float16"
+    ),
 }
 
-supported_model_types = set(["llama", "gpt_neox", "moss"])
+supported_model_types = set(["llama", "gpt_neox", "moss", "rwkv"])
 
 
 def argparse_postproc_common(args: argparse.Namespace) -> None:
@@ -61,6 +64,7 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
         "stablelm-": ("stablelm", "gpt_neox"),
         "redpajama-": ("redpajama_chat", "gpt_neox"),
         "moss-": ("moss", "moss"),
+        "rwkv-": ("rwkv", "rwkv"),
     }
     model = args.model.lower()
     for prefix, (conv_template, model_category) in supported_model_prefix.items():

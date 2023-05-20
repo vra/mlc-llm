@@ -45,6 +45,7 @@ class Conversation {
     kOasst_Pythia = 3,
     kMOSS = 4,
     kRedPajamaChat = 5,
+    kRWKV = 6,
   };
 
   static Conversation Create(const std::string& template_name = "vicuna_v1.1") {
@@ -196,6 +197,23 @@ class Conversation {
           /*sep=*/"<eoh>",
           /*sep2=*/"<eom>",
           /*stop_tokens=*/{106068});
+    } else if (template_name == "rwkv") {
+      return Conversation(
+          /*conv_template=*/"rwkv",
+          /*system=*/
+          "The following is a coherent verbose detailed conversation between a girl named Alice "
+          "and her friend Bob. \n"
+          "Alice is very intelligent, creative and friendly. \n"
+          "Alice is unlikely to disagree with Bob, and Alice doesn't like to ask Bob questions. \n"
+          "Alice likes to tell Bob a lot about herself and her opinions. \n"
+          "Alice usually gives Bob kind, helpful and informative advices.",
+          /*roles=*/{"Bob", "Alice"},
+          /*messages=*/{},
+          /*offset=*/0,
+          /*separator_style=*/Conversation::SeparatorStyle::kRWKV,
+          /*sep=*/"<|endoftext|>",
+          /*sep2=*/"\n\n",
+           /*stop_tokens=*/{0});
     } else {
       LOG(FATAL) << "Unknown conversation template: " << template_name;
     }
@@ -293,6 +311,13 @@ class Conversation {
           ret.push_back(this->messages[i][0] + ": " + this->messages[i][1] + seps[i % 2] + "\n");
         } else if (this->messages[i].size() == 1) {
           ret.push_back(this->messages[i][0] + ":");
+    } else if (this->separator_style == SeparatorStyle::kRWKV) {
+      ret.push_back("\n" + this->system_);
+      for (size_t i = 0; i < this->messages.size(); ++i) {
+        if (this->messages[i].size() == 2) {
+          ret.push_back(this->sep2 + this->messages[i][0] + ": " + this->messages[i][1] + this->sep2);
+        } else if (this->messages[i].size() == 1) {
+          ret.push_back(this->sep2 + this->messages[i][0] + ":");
         } else {
           LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
         }
@@ -369,6 +394,17 @@ class Conversation {
           ret.push_back(this->messages[i][0] + ": " + this->messages[i][1] + seps[i % 2] + "\n");
         } else if (this->messages[i].size() == 1) {
           ret.push_back(this->messages[i][0] + ":");
+        } else {
+          LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
+        }
+      }
+      return ret;
+    } else if (this->separator_style == SeparatorStyle::kRWKV) {
+      for (int i = this->messages.size() - 2; i < this->messages.size(); ++i) {
+        if (this->messages[i].size() == 2) {
+          ret.push_back(this->sep2 + this->messages[i][0] + ": " + this->messages[i][1] + this->sep2);
+        } else if (this->messages[i].size() == 1) {
+          ret.push_back(this->sep2 + this->messages[i][0] + ":");
         } else {
           LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
         }
@@ -675,7 +711,7 @@ class LLMChat {
     }
     // need shift window and re-encode
     this->total_seq_len_ = 0;
-    this->ClearKVCache();
+    this->ResetKVCache();
     context.clear();
     tokens.clear();
     if (this->add_bos_) {
@@ -739,7 +775,6 @@ class LLMChat {
 
     std::vector<int32_t> prompt_tokens = this->GetPromptTokens();
     int64_t token_len = static_cast<int64_t>(prompt_tokens.size());
-    tvm::runtime::NDArray input_data = this->GetInputTokenNDArray(prompt_tokens);
 
     total_seq_len_ += token_len;
     cur_pos_ = token_len;
@@ -747,10 +782,10 @@ class LLMChat {
 
     auto tstart = std::chrono::high_resolution_clock::now();
     if (temperature_ < 1e-6f) {
-      this->UpdateLogitsOrProbOnCPU(this->Forward(input_data, total_seq_len_));
+      this->UpdateLogitsOrProbOnCPU(this->Forward(prompt_tokens, total_seq_len_));
     } else {
       this->UpdateLogitsOrProbOnCPU(
-          this->Softmax(this->Forward(input_data, total_seq_len_), temperature_));
+          this->Softmax(this->Forward(prompt_tokens, total_seq_len_), temperature_));
     }
     TVMSynchronize(device_.device_type, device_.device_id, nullptr);
     auto tend = std::chrono::high_resolution_clock::now();
@@ -772,21 +807,19 @@ class LLMChat {
     appeared_token_ids_.insert(next_token_);
     output_message_ = RemoveStopStr(tokenizer_->Decode(output_ids_));
 
-    tvm::runtime::NDArray input_data = GetInputTokenNDArray({next_token_});
-
     total_seq_len_ += 1;
     cur_pos_ += 1;
 
     auto tstart = std::chrono::high_resolution_clock::now();
     if (repetition_penalty_ == 1.0f) {
       if (temperature_ < 1e-6f) {
-        this->UpdateLogitsOrProbOnCPU(this->Forward(input_data, total_seq_len_));
+        this->UpdateLogitsOrProbOnCPU(this->Forward({next_token_}, total_seq_len_));
       } else {
         this->UpdateLogitsOrProbOnCPU(
-            this->Softmax(this->Forward(input_data, total_seq_len_), temperature_));
+            this->Softmax(this->Forward({next_token_}, total_seq_len_), temperature_));
       }
     } else {
-      this->UpdateLogitsOrProbOnCPU(this->Forward(input_data, total_seq_len_));
+      this->UpdateLogitsOrProbOnCPU(this->Forward({next_token_}, total_seq_len_));
       this->ApplyRepetitionPenaltyOnCPU();
       if (temperature_ >= 1e-6f) {
         this->ApplySoftmaxWithTemperatureOnCPU();
@@ -865,30 +898,25 @@ class LLMChat {
 
   // do some quick evaluation of the pipeline
   void Evaluate() {
-    this->ClearKVCache();
+    this->ResetKVCache();
     std::string test_prompt = "The capital of Canada is";
     std::vector<int32_t> tokens = tokenizer_->Encode(test_prompt);
     tokens.insert(tokens.begin(), bos_token_id_);
     int64_t token_len = static_cast<int64_t>(tokens.size());
-
-    tvm::runtime::NDArray input_data = NDArray::Empty({1, token_len}, DataType::Int(32), device_);
-    input_data.CopyFromBytes(tokens.data(), tokens.size() * sizeof(int32_t));
-    tvm::runtime::NDArray first_sample_token = NDArray::Empty({1, 1}, DataType::Int(32), device_);
     std::vector<int32_t> first_sample_data = {6234};
-    first_sample_token.CopyFromBytes(first_sample_data.data(), sizeof(int32_t));
 
     // warm up: skip first run
-    this->Forward(input_data, token_len);
-    this->Forward(first_sample_token, token_len + 1);
-    this->ClearKVCache();
+    this->Forward(tokens, token_len);
+    this->Forward(first_sample_data, token_len + 1);
+    this->ResetKVCache();
 
     // start recording
     auto encoding_start = std::chrono::high_resolution_clock::now();
-    this->Forward(input_data, token_len);
+    this->Forward(tokens, token_len);
     TVMSynchronize(device_.device_type, device_.device_id, nullptr);
 
     auto decoding_start = std::chrono::high_resolution_clock::now();
-    this->UpdateLogitsOrProbOnCPU(this->Forward(first_sample_token, token_len + 1));
+    this->UpdateLogitsOrProbOnCPU(this->Forward(first_sample_data, token_len + 1));
     TVMSynchronize(device_.device_type, device_.device_id, nullptr);
     auto decoding_end = std::chrono::high_resolution_clock::now();
 
@@ -919,12 +947,17 @@ class LLMChat {
   }
 
   // run forward compute
-  NDArray Forward(NDArray inputs, int64_t cur_pos) {
+  NDArray Forward(std::vector<int32_t> input_tokens, int64_t cur_pos) {
     Array<ObjectRef> ret;
-    if (inputs->shape[1] > 1) {
-      ret = encoding_func_(inputs, ShapeTuple({cur_pos}), kv_cache_, params_);
+    if (input_tokens.size() > 1 && encoding_func_.defined()) {
+      NDArray input_data = this->GetInputTokenNDArray(input_tokens);
+      ret = encoding_func_(input_data, ShapeTuple({cur_pos}), kv_cache_, params_);
     } else {
-      ret = decoding_func_(inputs, ShapeTuple({cur_pos}), kv_cache_, params_);
+      for (int i = 0; i < input_tokens.size(); ++i) {
+        NDArray input_data = this->GetInputTokenNDArray({input_tokens[i]});
+        int64_t pos = cur_pos + i + 1 - input_tokens.size();
+        ret = decoding_func_(input_data, ShapeTuple({pos}), kv_cache_, params_);
+      }
     }
     return Downcast<NDArray>(ret[0]);
   }
@@ -981,12 +1014,7 @@ class LLMChat {
   }
 
   // Clear kv cache
-  void ClearKVCache() {
-    const PackedFunc* fkv_clear =
-        tvm::runtime::Registry::Get("vm.builtin.attention_kv_cache_array_clear");
-    ICHECK(fkv_clear);
-    (*fkv_clear)(kv_cache_);
-  }
+  void ResetKVCache() { reset_kv_cache_func_(kv_cache_); }
 
   // Utils
   static double GetRandomNumber() {
@@ -1095,6 +1123,8 @@ class LLMChat {
   PackedFunc softmax_func_;
   // get model metadata
   PackedFunc get_metadata_func_;
+  // reset kv cache
+  PackedFunc reset_kv_cache_func_;
   // sample top p from logits
   PackedFunc fsample_topp_from_logits_;
   // sample top p from prob
