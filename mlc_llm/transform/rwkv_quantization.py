@@ -19,7 +19,7 @@ def encoding_func(input_dtype: str, quant_dtype: str):
     assert nbit % 2 == 0
     scale = 1 << (nbit // 2)
 
-    def te_encode(
+    def encode(
         weight: te.Tensor,
     ) -> Tuple[te.Tensor, te.Tensor, te.Tensor, te.Tensor, te.Tensor]:
         weight = weight.astype("float32")
@@ -46,7 +46,7 @@ def encoding_func(input_dtype: str, quant_dtype: str):
         max_y = topi.divide(max_y, scale).astype(input_dtype)
         return weight, min_x, max_x, min_y, max_y
 
-    return te_encode
+    return encode
 
 
 def emit_encoding(builder: relax.BlockBuilder, weight: relax.Expr, quant_dtype: str):
@@ -65,7 +65,7 @@ def emit_encoding(builder: relax.BlockBuilder, weight: relax.Expr, quant_dtype: 
 def decoding_func(input_dtype, quant_dtype: str):
     assert (input_dtype, quant_dtype) == ("float16", "uint8")
 
-    def te_decode(
+    def decode(
         weight: te.Tensor,
         min_x: te.Tensor,
         max_x: te.Tensor,
@@ -75,7 +75,7 @@ def decoding_func(input_dtype, quant_dtype: str):
         x = weight.astype(input_dtype) + tir.const(0.5, input_dtype)
         return x * max_y * max_x + min_y + min_x
 
-    return te_decode
+    return decode
 
 
 @tvm.transform.module_pass(opt_level=0, name="RWKVQuantize")

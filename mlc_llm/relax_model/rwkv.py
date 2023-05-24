@@ -354,7 +354,7 @@ class RWKVForCausalLM(nn.Module):
 
 
 def create_decoding_func(bb: relax.BlockBuilder, config: RWKVConfig) -> None:
-    with bb.function("decoding"):
+    with bb.function("decode"):
         model = RWKVForCausalLM(config)
         input_ids = nn.Placeholder((1, 1), dtype="int32", name="input_ids")
         # Placeholder for compatibility to LLAMA
@@ -371,7 +371,7 @@ def create_decoding_func(bb: relax.BlockBuilder, config: RWKVConfig) -> None:
         bb.emit_func_output(gv, params)
 
     mod = bb.get()
-    gv = mod.get_global_var("decoding")
+    gv = mod.get_global_var("decode")
     bb.update_func(gv, mod[gv].with_attr("num_input", 3))
 
 

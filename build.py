@@ -225,7 +225,7 @@ def mod_transform_before_build(
     """First-stage: Legalize ops and trace"""
     if ARGS.model.startswith("rwkv-"):
         model_names = [
-            "decoding",
+            "decode",
             "create_kv_cache",
             "softmax_with_temperature",
             "get_metadata",
@@ -234,20 +234,26 @@ def mod_transform_before_build(
     else:
         model_names = [
             "prefill",
-            "decoding",
+            "decode",
             "create_kv_cache",
             "softmax_with_temperature",
             "get_metadata",
         ]
 
     if args.quantization.mode != "no":
-        mod = mlc_llm.transform.GroupQuantize(
-            group_size=40 if args.quantization.mode.endswith("3") else 32,
-            sym=args.quantization.sym,
-            mode=args.quantization.mode,
-            storage_nbit=args.quantization.storage_nbit,
-            dtype=args.quantization.model_dtype,
-        )(mod)
+        if ARGS.model.startswith("rwkv-"):
+            mod = mlc_llm.transform.RWKVQuantize(
+                mode=args.quantization.mode,
+                dtype=args.quantization.model_dtype,
+            )(mod)
+        else:
+            mod = mlc_llm.transform.GroupQuantize(
+                group_size=40 if args.quantization.mode.endswith("3") else 32,
+                sym=args.quantization.sym,
+                mode=args.quantization.mode,
+                storage_nbit=args.quantization.storage_nbit,
+                dtype=args.quantization.model_dtype,
+            )(mod)
     mod = mlc_llm.transform.FuseTransposeMatmul()(mod)
 
     mod = relax.pipeline.get_pipeline()(mod)

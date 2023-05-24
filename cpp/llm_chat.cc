@@ -208,12 +208,26 @@ class Conversation {
           "Alice likes to tell Bob a lot about herself and her opinions. \n"
           "Alice usually gives Bob kind, helpful and informative advices.",
           /*roles=*/{"Bob", "Alice"},
-          /*messages=*/{},
+          /*messages=*/
+          {{"Bob", "Hello Alice, how are you doing?"},
+           {"Alice", "Hi! Thanks, I'm fine. What about you?"},
+           {"Bob", "I am fine. It's nice to see you. Look, here is a store selling tea and juice."},
+           {"Alice",
+            "Sure. Let's go inside. I would like to have some Mocha latte, which is my favourite!"},
+           {"Bob", "What is it?"},
+           {"Alice",
+            "Mocha latte is usually made with espresso, milk, chocolate, and frothed milk. Its "
+            "flavors are frequently sweet."},
+           {"Bob",
+            "Sounds tasty. I'll try it next time. Would you like to chat with me for a while?"},
+           {"Alice",
+            "Of course! I'm glad to answer your questions or give helpful advices. You know, I am "
+            "confident with my expertise. So please go ahead!"}},
           /*offset=*/0,
           /*separator_style=*/Conversation::SeparatorStyle::kRWKV,
           /*sep=*/"<|endoftext|>",
           /*sep2=*/"\n\n",
-           /*stop_tokens=*/{0});
+          /*stop_tokens=*/{0});
     } else {
       LOG(FATAL) << "Unknown conversation template: " << template_name;
     }
@@ -303,7 +317,7 @@ class Conversation {
         }
       }
       return ret;
-    } else if (this->separator_style == SeparatorStyle::kRedPajamaChat) {
+    } else if (this->separator_style == SeparatorStyle::kMOSS) {
       std::vector<std::string> seps{this->sep, this->sep2};
       ret.push_back(this->system_);
       for (size_t i = 0; i < this->messages.size(); ++i) {
@@ -311,18 +325,23 @@ class Conversation {
           ret.push_back(this->messages[i][0] + ": " + this->messages[i][1] + seps[i % 2] + "\n");
         } else if (this->messages[i].size() == 1) {
           ret.push_back(this->messages[i][0] + ":");
-    } else if (this->separator_style == SeparatorStyle::kRWKV) {
-      ret.push_back("\n" + this->system_);
-      for (size_t i = 0; i < this->messages.size(); ++i) {
-        if (this->messages[i].size() == 2) {
-          ret.push_back(this->sep2 + this->messages[i][0] + ": " + this->messages[i][1] + this->sep2);
-        } else if (this->messages[i].size() == 1) {
-          ret.push_back(this->sep2 + this->messages[i][0] + ":");
         } else {
           LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
         }
       }
       return ret;
+    } else if (this->separator_style == SeparatorStyle::kRWKV) {
+      std::string ret_str = "\n" + this->system_ + this->sep2;
+      for (size_t i = 0; i < this->messages.size(); ++i) {
+        if (this->messages[i].size() == 2) {
+          ret_str += this->messages[i][0] + ": " + this->messages[i][1] + this->sep2;
+        } else if (this->messages[i].size() == 1) {
+          ret_str += this->messages[i][0] + ":";
+        } else {
+          LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
+        }
+      }
+      return {ret_str};
     } else {
       LOG(FATAL) << "Unknown separator style: " << (int)this->separator_style;
     }
@@ -400,16 +419,17 @@ class Conversation {
       }
       return ret;
     } else if (this->separator_style == SeparatorStyle::kRWKV) {
+      std::string ret_str;
       for (int i = this->messages.size() - 2; i < this->messages.size(); ++i) {
         if (this->messages[i].size() == 2) {
-          ret.push_back(this->sep2 + this->messages[i][0] + ": " + this->messages[i][1] + this->sep2);
+          ret_str += this->messages[i][0] + ": " + this->messages[i][1] + this->sep2;
         } else if (this->messages[i].size() == 1) {
-          ret.push_back(this->sep2 + this->messages[i][0] + ":");
+          ret_str += this->messages[i][0] + ":";
         } else {
           LOG(FATAL) << "Invalid message size: " << this->messages[i].size();
         }
       }
-      return ret;
+      return {ret_str};
     } else {
       LOG(FATAL) << "Unknown separator style: " << (int)this->separator_style;
     }
@@ -565,7 +585,17 @@ class LLMChat {
     // Step 4. KV cache creation.
     kv_cache_ = vm_->GetFunction("create_kv_cache")();
 
-    // Step 5. Process config json string.
+    // Step 5. KV cache reset.
+    reset_kv_cache_func_ = vm_->GetFunction("reset_kv_cache");
+    if (!reset_kv_cache_func_.defined()) {
+      auto attention_kv_cache_array_clear_ptr =
+          tvm::runtime::Registry::Get("vm.builtin.attention_kv_cache_array_clear");
+      ICHECK(attention_kv_cache_array_clear_ptr)
+          << "TVM runtime cannot find vm.builtin.attention_kv_cache_array_clear";
+      reset_kv_cache_func_ = *attention_kv_cache_array_clear_ptr;
+    }
+
+    // Step 6. Process config json string.
     std::ifstream config_istream((model_path + "/mlc-chat-config.json").c_str());
     std::ostringstream config_ostream;
     ICHECK(config_istream);
@@ -588,7 +618,7 @@ class LLMChat {
     this->mean_gen_len_ = config["mean_gen_len"].get<int64_t>();
     this->shift_fill_factor_ = config["shift_fill_factor"].get<double>();
 
-    // Step 6. Process metadata
+    // Step 7. Process metadata
     String metadata_str = this->get_metadata_func_();
     picojson::value metadata_info;
     picojson::parse(metadata_info, std::string(metadata_str));
@@ -607,7 +637,7 @@ class LLMChat {
       this->stop_tokens_.push_back(static_cast<int32_t>(stop_token.get<int64_t>()));
     }
 
-    // Step 7. Initialize conversation.
+    // Step 8. Initialize conversation.
     this->conversation_ = Conversation::Create(conv_template);
     this->stop_str_ = this->conversation_.separator_style == Conversation::SeparatorStyle::kSingle
                           ? this->conversation_.sep
@@ -655,8 +685,8 @@ class LLMChat {
   }
 
   void ResetChat() {
-    this->conversation_.messages.clear();
-    this->ClearKVCache();
+    this->conversation_ = Conversation::Create(this->conversation_.conv_template);
+    this->ResetKVCache();
     this->total_seq_len_ = 0;
     this->start_pos_ = 0;
     this->cur_pos_ = 0;
@@ -677,7 +707,7 @@ class LLMChat {
       this->add_bos_ = false;
     }
     std::vector<std::string> prompts;
-    if (this->conversation_.messages.size() <= 2) {
+    if (this->cur_pos_ == 0) {
       prompts = this->conversation_.GetPromptArray();
     } else {
       prompts = this->conversation_.GetPromptArrayUnprocessed();
@@ -875,8 +905,8 @@ class LLMChat {
     while (effective_begin < effective_end && output_message_[effective_begin] == ' ') {
       ++effective_begin;
     }
-    std::string cropped_message = output_message_.substr(
-      effective_begin, effective_end - effective_begin);
+    std::string cropped_message =
+        output_message_.substr(effective_begin, effective_end - effective_begin);
     return cropped_message;
   }
 
