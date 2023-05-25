@@ -353,9 +353,9 @@ def sch_fused_decode4_matmul3(sch: tir.Schedule) -> None:
     l8, l9, l10 = sch.get_loops(block=b6)
     v11, v12, v13, v14, v15 = 1, 1, 1, 1, 1
     l16, l17, l18, l19, l20 = sch.split(loop=l8, factors=[v11, v12, v13, v14, v15], preserve_unit_iters=True)
-    v21, v22, v23, v24, v25 = 393, 1, 64, 1, 2
+    v21, v22, v23, v24, v25 = None, 1, 64, 1, 2
     l26, l27, l28, l29, l30 = sch.split(loop=l9, factors=[v21, v22, v23, v24, v25], preserve_unit_iters=True)
-    v31, v32, v33 = 128, 4, 4
+    v31, v32, v33 = None, 4, 4
     l34, l35, l36 = sch.split(loop=l10, factors=[v31, v32, v33], preserve_unit_iters=True)
     sch.reorder(l16, l26, l17, l27, l18, l28, l34, l35, l19, l29, l36, l20, l30)
     l37 = sch.fuse(l16, l26, preserve_unit_iters=True)
@@ -427,7 +427,7 @@ def main():
         mod=args.mod,
         target=args.target,
         work_dir=args.work_dir,
-        max_trials_global=1000,
+        max_trials_global=2000,
         # max_trials_per_task=2,
         runner=ms.runner.LocalRunner(timeout_sec=10),
         # runner=ms.runner.RPCRunner(

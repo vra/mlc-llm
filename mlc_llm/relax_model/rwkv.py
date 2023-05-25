@@ -69,13 +69,12 @@ def _load_state(state: Expr, hidden_size: int, dtype: str) -> Expr:
             sinfo_args=[R.Tensor((1, hidden_size), dtype)],
         )
     )
-    return nn.emit(op.squeeze(cache, axis=0))
+    return cache
 
 
 def _store_state(state: Expr, value: Expr):
     # Reuse `attention_kv_cache_update`
     f_store_cache = relax.extern("vm.builtin.attention_kv_cache_update")
-    value = nn.emit(op.reshape(value, shape=[1, -1]))
 
     return nn.emit(
         relax.Call(
@@ -96,8 +95,7 @@ class RWKV_Embedding(nn.Module):
 
     def forward(self, x: relax.Expr) -> relax.Var:
         x = nn.emit(op.reshape(x, shape=[-1]))
-        x = nn.emit(op.take(self.weight, x, axis=0))
-        return nn.emit(op.reshape(x, shape=[1, -1]))
+        return nn.emit(op.take(self.weight, x, axis=0))
 
 
 class RWKV_LayerNorm(nn.Module):

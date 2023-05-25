@@ -347,8 +347,11 @@ def parse_target(args: argparse.Namespace) -> None:
                     "max_shared_memory_per_block": 32768,
                     "thread_warp_size": 1,
                     "supports_float16": 1,
+                    "supports_int8": 1,
+                    "supports_8bit_buffer": 1,
                     "supports_int16": 1,
                     "supports_16bit_buffer": 1,
+                    "supports_storage_buffer_storage_class": 1,
                 }
             ),
             host="llvm",
